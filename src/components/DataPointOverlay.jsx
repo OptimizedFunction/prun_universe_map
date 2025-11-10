@@ -2375,65 +2375,10 @@ const DataPointOverlay = ({ mapRef }) => {
       (flights || []).forEach((flight) => {
         const flightShipId = flight?.ShipId ?? flight?.shipId ?? flight?.Ship ?? null;
         const flightShipIdStr = flightShipId != null ? String(flightShipId) : null;
-        if (flightShipIdStr === 'GenFreight 1' || flight?.Name === 'GenFreight 1' || flight?.ShipName === 'GenFreight 6') {
-          const shipForFlight = shipsById.get(flight.ShipId) || null;
-          const hasSegments = Array.isArray(flight.Segments) && flight.Segments.length > 0;
-          const segmentSummary = hasSegments
-            ? flight.Segments.map((segment, index) => ({
-              index,
-              origin: segment?.OriginLines,
-              destination: segment?.DestinationLines,
-              dep: segment?.DepartureTimeEpochMs || segment?.DepartureEpochMs,
-              arr: segment?.ArrivalTimeEpochMs || segment?.ArrivalEpochMs
-            }))
-            : [];
-
-          // eslint-disable-next-line no-console
-          console.debug('[GenFreight 6][flight-precheck]', {
-            flightIndex: flightSegmentsCache.size,
-            flightId: flight.FlightId,
-            shipId: flightShipIdStr,
-            flightOrigin: flight.Origin,
-            flightDestination: flight.Destination,
-            shipForFlight,
-            hasSegments,
-            segmentsCount: Array.isArray(flight.Segments) ? flight.Segments.length : 0,
-            segmentSummary
-          });
-        }
-
         if (selectedShipId !== '__all__' && flightShipIdStr !== selectedShipId) {
           return;
         }
         const ship = shipsById.get(flight.ShipId) || null;
-        if (ship?.Name === 'GenFreight 6' || ship?.ShipName === 'GenFreight 6' || flightShipIdStr === 'GenFreight 6') {
-          const originCandidate = selectDisplayLocation(
-            deriveLocationFromLabel(flight.Origin),
-            segmentPairs.meta?.firstLocation,
-            segmentPairs[0]?.fromLocation
-          );
-          const destinationCandidate = selectDisplayLocation(
-            deriveLocationFromLabel(flight.Destination),
-            segmentPairs.meta?.finalLocation,
-            segmentPairs[segmentPairs.length - 1]?.toLocation
-          );
-
-          // eslint-disable-next-line no-console
-          console.debug('[GenFreight 6][flight-after-segments]', {
-            flightShipId: flightShipIdStr,
-            flightId: flight.FlightId,
-            originLabel: flight.Origin,
-            destinationLabel: flight.Destination,
-            hasSegments: segmentPairs.length > 0,
-            segmentPairsCount: segmentPairs.length,
-            firstLocationMeta: segmentPairs.meta?.firstLocation,
-            finalLocationMeta: segmentPairs.meta?.finalLocation,
-            resolvedOrigin: originCandidate,
-            resolvedDestination: destinationCandidate,
-            firstSegment: segmentPairs[0] || null,
-            lastSegment: segmentPairs[segmentPairs.length - 1] || null
-          });
-        }
         const shipStyle = classifyShipType(ship, flightShipIdStr);
         const pathColor = shipStyle.color;
         const shipTypeLabel = shipStyle.label;
