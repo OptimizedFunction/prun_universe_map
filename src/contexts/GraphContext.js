@@ -31,6 +31,7 @@ export const GraphProvider = ({ children }) => {
   const [groupStorageData, setGroupStorageData] = useState([]);
   const [groupContracts, setGroupContracts] = useState([]);
   const { authToken, userName } = useContext(AuthContext);
+  const [refetchTrigger, setRefetchTrigger] = useState(0);
 
   useEffect(() => {
     fetch('graph_data.json')
@@ -241,7 +242,7 @@ export const GraphProvider = ({ children }) => {
     return () => {
       isMounted = false;
     };
-  }, [authToken, userName]);
+  }, [authToken, userName, refetchTrigger]);
 
   const findShortestPath = useCallback((system1, system2) => {
     findShortestPathUtil(graph, system1, system2, highlightPath);
@@ -301,7 +302,8 @@ export const GraphProvider = ({ children }) => {
     setGroupShips,
     setGroupFlights,
     setGroupStorageData,
-    setGroupContracts
+    setGroupContracts,
+    refetchUserData: () => setRefetchTrigger(prev => prev + 1)
   }), [
     graph,
     materials,

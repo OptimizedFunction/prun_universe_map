@@ -297,10 +297,15 @@ const DataPointOverlay = ({ mapRef }) => {
     groupFlights,
     groupStorageData,
     groupContracts,
+    setShips,
+    setFlights,
+    setStorageData,
+    setContracts,
     setGroupShips,
     setGroupFlights,
     setGroupStorageData,
-    setGroupContracts
+    setGroupContracts,
+    refetchUserData
   } = useContext(GraphContext);
   const {
     authToken,
@@ -312,6 +317,8 @@ const DataPointOverlay = ({ mapRef }) => {
   } = useContext(AuthContext);
   const [selectedShipId, setSelectedShipId] = useState('__all__');
   const [partnerFilter, setPartnerFilter] = useState('');
+  const [apiUsername, setApiUsername] = useState('');
+  const [pendingApiUsername, setPendingApiUsername] = useState('');
   const [isSilTracking, setIsSilTracking] = useState(false);
   const [silToggleLoading, setSilToggleLoading] = useState(false);
   const [silToggleError, setSilToggleError] = useState(null);
@@ -807,6 +814,11 @@ const DataPointOverlay = ({ mapRef }) => {
   const normalizedPartnerFilter = useMemo(() => normalizeLookupKey(partnerFilter) || '', [partnerFilter]);
   const partnerFilterActive = normalizedPartnerFilter.length > 0;
 
+  // Use custom API username if provided, otherwise use authenticated username
+  const effectiveApiUsername = useMemo(() => {
+    return apiUsername.trim() || userName || '';
+  }, [apiUsername, userName]);
+
   useEffect(() => {
     setIsSilTracking(authToken === SIL_TRACKER_API_KEY);
     if (!authToken || authToken === SIL_TRACKER_API_KEY || !userName) {
@@ -819,6 +831,56 @@ const DataPointOverlay = ({ mapRef }) => {
       authStrategy: authStrategy || null
     };
   }, [authToken, userName, authStrategy]);
+
+  // Sync pending username with applied username
+  useEffect(() => {
+    setPendingApiUsername(apiUsername);
+  }, [apiUsername]);
+  useEffect(() => {
+    if (!authToken || !effectiveApiUsername || effectiveApiUsername === userName || isSilTracking) {
+      return;
+    }
+
+    const headers = {
+      Authorization: authToken,
+      Accept: 'application/json'
+    };
+
+    const fetchCustomUserData = async () => {
+      try {
+        const [shipsResp, flightsResp, storageResp, contractsResp] = await Promise.all([
+          fetch(`https://rest.fnar.net/ship/ships/${encodeURIComponent(effectiveApiUsername)}`, { headers }),
+          fetch(`https://rest.fnar.net/ship/flights/${encodeURIComponent(effectiveApiUsername)}`, { headers }),
+          fetch(`https://rest.fnar.net/storage/${encodeURIComponent(effectiveApiUsername)}`, { headers }),
+          fetch(`https://rest.fnar.net/contract/allcontracts/${encodeURIComponent(effectiveApiUsername)}`, { headers })
+        ]);
+
+        if (shipsResp.ok) {
+          const shipsData = await shipsResp.json();
+          setShips(Array.isArray(shipsData) ? shipsData : []);
+        }
+
+        if (flightsResp.ok) {
+          const flightsData = await flightsResp.json();
+          setFlights(Array.isArray(flightsData) ? flightsData : []);
+        }
+
+        if (storageResp.ok) {
+          const storageData = await storageResp.json();
+          setStorageData(Array.isArray(storageData) ? storageData : []);
+        }
+
+        if (contractsResp.ok) {
+          const contractsData = await contractsResp.json();
+          setContracts(Array.isArray(contractsData) ? contractsData : []);
+        }
+      } catch (error) {
+        console.error('Error fetching custom user data:', error);
+      }
+    };
+
+    fetchCustomUserData();
+  }, [effectiveApiUsername, authToken, userName, isSilTracking, setShips, setFlights, setStorageData, setContracts]);
 
   const matchesPartnerFilter = useCallback((entry) => {
     if (!partnerFilterActive) {
@@ -1077,7 +1139,7 @@ const DataPointOverlay = ({ mapRef }) => {
     });
 
     return { counts, shipmentDetails };
-  }, [combinedStorageData, planetData, universeData, stationData, shipmentContractsByItemId, normalizeLookupKey]);
+  }, [combinedStorageData, planetData, universeData, stationData, shipmentContractsByItemId]);
 
   const showNoPartnerMatches = partnerFilterActive
     && (!partnerFilteredShipments || partnerFilteredShipments.size === 0);
@@ -1734,6 +1796,14 @@ const DataPointOverlay = ({ mapRef }) => {
     setPartnerFilter(event.target.value);
   }, []);
 
+  const handleApiUsernameChange = useCallback((event) => {
+    setPendingApiUsername(event.target.value);
+  }, []);
+
+  const handleApplyApiUsername = useCallback(() => {
+    setApiUsername(pendingApiUsername.trim());
+  }, [pendingApiUsername]);
+
   useEffect(() => {
     if (selectedShipId === '__all__') return;
     const stillExists = (combinedShips || []).some((ship) => {
@@ -1761,13 +1831,16 @@ const DataPointOverlay = ({ mapRef }) => {
     const flightLayer = getLayer('flight-layer');
     const overlayLayer = getLayer('overlay-layer');
     const shipLayer = getLayer('ship-layer');
+    const tooltipLayer = getLayer('tooltip-layer');
 
     flightLayer.selectAll('*').remove();
     shipLayer.selectAll('*').remove();
     overlayLayer.selectAll('*').remove();
+    tooltipLayer.selectAll('*').remove();
 
     overlayLayer.raise();
     shipLayer.raise();
+    tooltipLayer.raise();
 
     const { byId: planetsById, byNaturalId: planetsByNaturalId } = planetLookups;
 
@@ -2010,18 +2083,6 @@ const DataPointOverlay = ({ mapRef }) => {
       };
     };
 
-    const getShipColor = (ship, explicitKey) => classifyShipType(ship, explicitKey).color;
-
-    const describeShip = (ship) => ({
-      shipId: ship?.ShipId ?? ship?.Id ?? ship?.Ship ?? ship?.Registration ?? null,
-      name: ship?.Name ?? ship?.ShipName ?? null,
-      blueprint: ship?.BlueprintNaturalId ?? ship?.Blueprint ?? null,
-      status: ship?.Status ?? ship?.ShipStatus ?? ship?.State ?? null,
-      inTransit: ship?.InTransit ?? ship?.IsInTransit ?? ship?.TravelState ?? null,
-      currentSystemId: ship?.CurrentSystemId ?? ship?.SystemId ?? null,
-      location: ship?.Location ?? ship?.LocationLines ?? ship?.CurrentLocation ?? ship?.AddressLines ?? null
-    });
-
     const safeString = (value) => (typeof value === 'string' ? value.trim() : value);
 
     const resolveSystemId = (candidate) => {
@@ -2047,7 +2108,7 @@ const DataPointOverlay = ({ mapRef }) => {
           return systemLookups.byName.get(cleanedName);
         }
 
-        const parenMatch = id.match(/\(([A-Za-z0-9\-]+)\)/);
+        const parenMatch = id.match(/\(([A-Za-z0-9-]+)\)/);
         if (parenMatch) {
           const naturalIdCandidate = parenMatch[1].toUpperCase();
           if (systemLookups.byNaturalId.has(naturalIdCandidate)) {
@@ -2497,7 +2558,7 @@ const DataPointOverlay = ({ mapRef }) => {
 
       const parseSegment = (segment) => {
         if (!segment) return null;
-        const match = segment.match(/^(.*)\s+\(([A-Za-z0-9\-]+)\)$/);
+        const match = segment.match(/^(.*)\s+\(([A-Za-z0-9-]+)\)$/);
         if (match) {
           return { name: match[1].trim(), naturalId: match[2].trim() };
         }
@@ -2798,6 +2859,9 @@ const DataPointOverlay = ({ mapRef }) => {
       };
     };
 
+    // Collect destination information for markers
+    const destinations = new Map(); // Map<systemId, {arrivals: Array<{shipName, eta, owner}>, isStation: boolean}>
+
     if (graph && (combinedShips?.length > 0 || combinedFlights?.length > 0)) {
       (combinedFlights || []).forEach((flight) => {
         const flightShipId = flight?.ShipId ?? flight?.shipId ?? flight?.Ship ?? null;
@@ -2847,7 +2911,7 @@ const DataPointOverlay = ({ mapRef }) => {
           const originLocation = extractLocationDetails(segment.OriginLines);
           const destinationLocation = extractLocationDetails(segment.DestinationLines);
 
-          if (destinationLocation && (destinationLocation.systemId || destinationLocation.planetName || destinationLocation.planetNaturalId)) {
+          if (destinationLocation && (destinationLocation.systemId || destinationLocation.planetName || destinationLocation.planetNaturalId || destinationLocation.stationName || destinationLocation.stationNaturalId)) {
             finalLocation = destinationLocation;
           }
 
@@ -2936,6 +3000,39 @@ const DataPointOverlay = ({ mapRef }) => {
 
         const flightTiming = computeFlightTiming(flight, segmentPairs);
 
+        // Collect destination information for markers
+        if (finalLocation?.systemId && (finalLocation?.planetNaturalId || finalLocation?.stationNaturalId || finalLocation?.AddressableId || finalLocation?.addressableId)) {
+          // Use planet or station identifier
+          const locationId = finalLocation.planetNaturalId || finalLocation.stationNaturalId || finalLocation.AddressableId || finalLocation.addressableId || 'unknown';
+          const planetKey = `${finalLocation.systemId}-${locationId}`;
+          if (!destinations.has(planetKey)) {
+            // Check if this is a station based on the location properties
+            const isStation = !!(finalLocation.stationId || finalLocation.stationNaturalId || finalLocation.stationName ||
+              finalLocation.AddressableId || finalLocation.addressableId);
+
+            destinations.set(planetKey, {
+              systemId: finalLocation.systemId,
+              planetNaturalId: finalLocation.planetNaturalId || locationId,
+              planetName: finalLocation.planetName,
+              stationNaturalId: finalLocation.stationNaturalId,
+              stationName: finalLocation.stationName,
+              arrivals: [],
+              isStation: isStation
+            });
+          }
+
+          const shipName = ship?.Name || ship?.ShipName || flightShipIdStr || 'Unknown Ship';
+          const eta = flightTiming.arrival ? new Date(flightTiming.arrival) : null;
+          const owner = ship?._user || 'Unknown';
+
+          destinations.get(planetKey).arrivals.push({
+            shipName,
+            eta,
+            owner,
+            flightId: flight?.FlightId || flightShipIdStr
+          });
+        }
+
         const segmentIndexCandidatesRaw = [
           flight?.CurrentSegmentIndex,
           flight?.SegmentIndex,
@@ -3010,7 +3107,7 @@ const DataPointOverlay = ({ mapRef }) => {
             return;
           }
 
-          const segmentKey = [segmentInfo.fromId, segmentInfo.toId].sort().join('__');
+          const segmentKey = `${segmentInfo.fromId}__${segmentInfo.toId}`;
           const slot = getOffsetSlotForSegment(segmentKey);
           const offsetIndex = computeOffsetIndex(slot);
           const baseOffset = Math.max(3 / Math.max(1, zoomLevel), 1.5);
@@ -3060,7 +3157,108 @@ const DataPointOverlay = ({ mapRef }) => {
             .attr('fill', 'none')
             .attr('stroke', pathColor)
             .attr('stroke-width', Math.max(1.5 / zoomLevel, 1))
-            .attr('stroke-opacity', 0.7);
+            .attr('stroke-opacity', 0.7)
+            .attr('data-flight-id', flight.FlightId || flightShipIdStr || 'unknown')
+            .attr('data-ship-id', flightShipIdStr || 'unknown')
+            .style('cursor', 'pointer')
+            .on('mouseover', function () {
+              // Highlight entire route
+              d3.selectAll(`[data-flight-id="${flight.FlightId || flightShipIdStr || 'unknown'}"]`)
+                .attr('stroke-opacity', 1.0)
+                .attr('stroke-width', Math.max(2.5 / zoomLevel, 1.5));
+              // Highlight ship marker with black outline and 1.3x size
+              d3.selectAll(`[data-ship-id="${flightShipIdStr || 'unknown'}"] .ship-group path`)
+                .attr('stroke', '#000000')
+                .attr('stroke-width', function () {
+                  const currentWidth = d3.select(this).attr('stroke-width');
+                  return parseFloat(currentWidth) * 1.3;
+                });
+              // Show ship info tooltip
+              d3.selectAll(`[data-ship-id="${flightShipIdStr || 'unknown'}"]`)
+                .dispatch('mouseover.shipinfo');
+            })
+            .on('mouseout', function () {
+              // Reset highlighting
+              d3.selectAll(`[data-flight-id="${flight.FlightId || flightShipIdStr || 'unknown'}"]`)
+                .attr('stroke-opacity', 0.7)
+                .attr('stroke-width', Math.max(1.5 / zoomLevel, 1));
+              // Reset ship marker highlighting
+              d3.selectAll(`[data-ship-id="${flightShipIdStr || 'unknown'}"] .ship-group path`)
+                .attr('stroke', function () {
+                  // Reset to original stroke color - white outline
+                  return '#ffffff';
+                })
+                .attr('stroke-width', function () {
+                  const currentWidth = d3.select(this).attr('stroke-width');
+                  return parseFloat(currentWidth) / 1.3;
+                });
+              // Hide ship info tooltip
+              d3.selectAll(`[data-ship-id="${flightShipIdStr || 'unknown'}"]`)
+                .dispatch('mouseout.shipinfo');
+            })
+            .on('click', function (event) {
+              event.stopPropagation();
+
+              // Show detailed route info
+              const flightId = d3.select(this).attr('data-flight-id');
+              const shipId = d3.select(this).attr('data-ship-id');
+
+              // Find the flight data
+              const flightData = combinedFlights.find(f =>
+                (f.FlightId || f.shipId || f.ShipId) === flightId ||
+                (f.FlightId || f.shipId || f.ShipId) === shipId
+              );
+
+              if (flightData) {
+                console.log('Route details:', {
+                  flight: flightData,
+                  segments: flightData.Segments || [],
+                  ship: shipsById.get(flightData.ShipId)
+                });
+
+                // TODO: Show detailed route modal/tooltip with full path information
+                // For now, just log the route details
+              }
+            });
+
+          // Add animated flow particles
+          const pathLength = Math.hypot(deltaX, deltaY);
+          if (pathLength > 50) { // Only add particles to longer paths
+            const particleCount = Math.min(Math.max(Math.floor(pathLength / 100), 1), 3);
+            for (let i = 0; i < particleCount; i++) {
+              const delay = (i / particleCount) * 4000; // Stagger particles
+              const particle = flightLayer.append('circle')
+                .attr('class', 'flight-particle')
+                .attr('r', Math.max(1.5 / zoomLevel, 0.8))
+                .attr('fill', pathColor)
+                .attr('opacity', 0.8)
+                .attr('data-flight-id', flight.FlightId || flightShipIdStr || 'unknown');
+
+              // Animate particle along path continuously
+              const restartAnimation = function () {
+                d3.select(this)
+                  .attr('cx', startPoint.x)
+                  .attr('cy', startPoint.y)
+                  .transition()
+                  .duration(4000)
+                  .ease(d3.easeLinear)
+                  .attr('cx', endPoint.x)
+                  .attr('cy', endPoint.y)
+                  .on('end', restartAnimation); // Loop continuously
+              };
+
+              particle
+                .attr('cx', startPoint.x)
+                .attr('cy', startPoint.y)
+                .transition()
+                .duration(4000)
+                .delay(delay)
+                .ease(d3.easeLinear)
+                .attr('cx', endPoint.x)
+                .attr('cy', endPoint.y)
+                .on('end', restartAnimation);
+            }
+          }
         });
 
         // Render ship marker at interpolated position if this flight is current ship
@@ -3573,6 +3771,10 @@ const DataPointOverlay = ({ mapRef }) => {
             markerGroup
               .on('mouseover.shipinfo', () => {
                 showInfo();
+                // Highlight the entire flight path
+                d3.selectAll(`[data-flight-id="${flight.FlightId || flightShipIdStr || 'unknown'}"]`)
+                  .attr('stroke-opacity', 1.0)
+                  .attr('stroke-width', Math.max(2.5 / zoomLevel, 1.5));
               })
               .on('mouseout.shipinfo', (event) => {
                 const related = event.relatedTarget;
@@ -3581,6 +3783,10 @@ const DataPointOverlay = ({ mapRef }) => {
                   return;
                 }
                 hideInfo();
+                // Reset flight path highlighting
+                d3.selectAll(`[data-flight-id="${flight.FlightId || flightShipIdStr || 'unknown'}"]`)
+                  .attr('stroke-opacity', 0.7)
+                  .attr('stroke-width', Math.max(1.5 / zoomLevel, 1));
               });
 
             // Keep tooltip visible when hovering over tooltip elements
@@ -3597,6 +3803,10 @@ const DataPointOverlay = ({ mapRef }) => {
                       return;
                     }
                     hideInfo();
+                    // Reset flight path highlighting
+                    d3.selectAll(`[data-flight-id="${flight.FlightId || flightShipIdStr || 'unknown'}"]`)
+                      .attr('stroke-opacity', 0.7)
+                      .attr('stroke-width', Math.max(1.5 / zoomLevel, 1));
                   });
               }
             });
@@ -3652,45 +3862,142 @@ const DataPointOverlay = ({ mapRef }) => {
           return;
         }
 
+        // Count STL transit ships as arrivals at their destination
+        const stlShipFlight = flightsByShipId.get(ship.ShipId) || flightsByShipId.get(ship.Id);
+        if (stlShipFlight && Array.isArray(stlShipFlight.Segments) && stlShipFlight.Segments.length > 0) {
+          // Check if this is an STL-only flight (no inter-system segments)
+          const hasInterSystemSegment = stlShipFlight.Segments.some(segment => {
+            const originLocation = extractLocationDetails(segment.OriginLines);
+            const destinationLocation = extractLocationDetails(segment.DestinationLines);
+            return originLocation?.systemId && destinationLocation?.systemId &&
+              originLocation.systemId !== destinationLocation.systemId;
+          });
+
+          if (!hasInterSystemSegment) {
+            // This is an STL transit within the system
+            const currentSegmentIndex = stlShipFlight.CurrentSegmentIndex ?? 0;
+            const currentSegment = stlShipFlight.Segments[currentSegmentIndex];
+
+            if (currentSegment) {
+              const destinationLocation = extractLocationDetails(currentSegment.DestinationLines);
+              if (destinationLocation && (destinationLocation.planetNaturalId || destinationLocation.stationNaturalId)) {
+                const locationId = destinationLocation.planetNaturalId || destinationLocation.stationNaturalId;
+                const planetKey = `${effectiveSystemId}-${locationId}`;
+
+                // Ensure destination exists
+                if (!destinations.has(planetKey)) {
+                  const isStation = !!(destinationLocation.stationId || destinationLocation.stationNaturalId || destinationLocation.stationName);
+                  destinations.set(planetKey, {
+                    systemId: effectiveSystemId,
+                    planetNaturalId: destinationLocation.planetNaturalId || locationId,
+                    planetName: destinationLocation.planetName,
+                    stationNaturalId: destinationLocation.stationNaturalId,
+                    stationName: destinationLocation.stationName,
+                    arrivals: [],
+                    isStation: isStation
+                  });
+                }
+
+                // Add STL ship to arrivals
+                const shipName = ship?.Name || ship?.ShipName || shipIdStr || 'Unknown Ship';
+                const eta = currentSegment.ArrivalTimeEpochMs ? new Date(currentSegment.ArrivalTimeEpochMs) : null;
+                destinations.get(planetKey).arrivals.push({
+                  shipName,
+                  eta,
+                  owner: ship?._user || 'Unknown',
+                  flightId: stlShipFlight?.FlightId || shipIdStr,
+                  isSTL: true
+                });
+              }
+            }
+          }
+        }
+
         const effectiveZoom = Math.max(1, zoomLevel);
         // Make idle ship markers 33% smaller
         const radius = Math.max(4 / effectiveZoom, 2);
         const positionKey = `${Math.round(systemCenter.x / 5)}:${Math.round(systemCenter.y / 5)}`;
         const markerSlot = getMarkerSlot(positionKey);
 
-        // Arrange idle ships in rings around the system marker (no center position)
-        // First ring: 8 ships, Second ring: 16 ships, etc.
-        const shipsPerRing = [8, 16, 24, 32]; // Ring sizes
-        let ringIndex = 0;
-        let positionInRing = markerSlot;
-        let cumulativeShips = 0;
+        // Calculate ship position based on flight direction
+        let shipAngle = 0;
+        let ringRadius = 0;
 
-        // Determine which ring and position within that ring
-        for (let i = 0; i < shipsPerRing.length; i++) {
-          if (positionInRing < shipsPerRing[i]) {
-            ringIndex = i;
-            break;
+        // Check if ship has flight data to determine direction
+        const directionShipFlight = flightsByShipId.get(ship.ShipId) || flightsByShipId.get(ship.Id);
+        if (directionShipFlight && Array.isArray(directionShipFlight.Segments) && directionShipFlight.Segments.length > 0) {
+          // Ship has flight data - position based on direction
+          const segments = directionShipFlight.Segments;
+          const currentSegmentIndex = directionShipFlight.CurrentSegmentIndex ?? 0;
+          const currentSegment = segments[currentSegmentIndex];
+
+          if (currentSegment) {
+            const fromSystem = currentSegment.OriginLines ? extractLocationDetails(currentSegment.OriginLines)?.systemId : null;
+            const toSystem = currentSegment.DestinationLines ? extractLocationDetails(currentSegment.DestinationLines)?.systemId : null;
+
+            let directionSystem = null;
+            if (fromSystem === effectiveSystemId && toSystem) {
+              // Ship is departing from current system to another
+              directionSystem = toSystem;
+            } else if (toSystem === effectiveSystemId && fromSystem) {
+              // Ship is arriving at current system from another
+              directionSystem = fromSystem;
+            }
+
+            if (directionSystem) {
+              const directionCenter = getSystemCenter(directionSystem);
+              if (directionCenter) {
+                // Calculate angle from system center to direction system
+                const dx = directionCenter.x - systemCenter.x;
+                const dy = directionCenter.y - systemCenter.y;
+                shipAngle = Math.atan2(dy, dx);
+
+                // Position in outer ring for ships with directions
+                const destinationMarkerRadius = Math.max(8 / effectiveZoom, 4) * 0.75 * 5; // Planet ring max radius
+                ringRadius = (destinationMarkerRadius + Math.max(8 / effectiveZoom, 6) * 3) * 0.5;
+              }
+            }
           }
-          positionInRing -= shipsPerRing[i];
-          cumulativeShips += shipsPerRing[i];
-          ringIndex = i + 1;
         }
 
-        // If we have more ships than planned rings, keep adding rings
-        if (ringIndex >= shipsPerRing.length) {
-          const extraShips = markerSlot - cumulativeShips;
-          const shipsInExtraRing = 32 + (ringIndex - shipsPerRing.length + 1) * 8;
-          positionInRing = extraShips % shipsInExtraRing;
+        // If no direction determined, use ring-based positioning
+        if (ringRadius === 0) {
+          // Arrange idle ships in rings around the system marker (no center position)
+          // First ring: 8 ships, Second ring: 16 ships, etc.
+          const shipsPerRing = [8, 12, 16, 20, 24, 28]; // Ring sizes
+          let ringIndex = 0;
+          let positionInRing = markerSlot;
+          let cumulativeShips = 0;
+
+          // Determine which ring and position within that ring
+          for (let i = 0; i < shipsPerRing.length; i++) {
+            if (positionInRing < shipsPerRing[i]) {
+              ringIndex = i;
+              break;
+            }
+            positionInRing -= shipsPerRing[i];
+            cumulativeShips += shipsPerRing[i];
+            ringIndex = i + 1;
+          }
+
+          // If we have more ships than planned rings, keep adding rings
+          if (ringIndex >= shipsPerRing.length) {
+            const extraShips = markerSlot - cumulativeShips;
+            const shipsInExtraRing = 28 + (ringIndex - shipsPerRing.length + 1) * 4;
+            positionInRing = extraShips % shipsInExtraRing;
+          }
+
+          // Arrange in semi-circular rings (bottom half to avoid planet markers)
+          const destinationMarkerRadius = Math.max(8 / effectiveZoom, 4) * 0.75 * 5; // Planet ring max radius
+          ringRadius = (destinationMarkerRadius + Math.max(8 / effectiveZoom, 6) * ((ringIndex) * 1.5 + 1.5)) * 0.5; // Decreased by 50%
+          const shipsInThisRing = ringIndex < shipsPerRing.length
+            ? shipsPerRing[ringIndex]
+            : 28 + (ringIndex - shipsPerRing.length + 1) * 4;
+          shipAngle = (positionInRing / Math.max(shipsInThisRing - 1, 1)) * Math.PI + Math.PI / 2;
         }
 
-        // Arrange in a ring (no center position) - rings are closer together
-        const ringRadius = Math.max(8 / effectiveZoom, 6) * (ringIndex + 1);
-        const shipsInThisRing = ringIndex < shipsPerRing.length
-          ? shipsPerRing[ringIndex]
-          : 32 + (ringIndex - shipsPerRing.length + 1) * 8;
-        const angle = (positionInRing / shipsInThisRing) * 2 * Math.PI;
-        const offsetX = Math.cos(angle) * ringRadius;
-        const offsetY = Math.sin(angle) * ringRadius;
+        const offsetX = Math.cos(shipAngle) * ringRadius;
+        const offsetY = Math.sin(shipAngle) * ringRadius;
 
         const markerX = systemCenter.x + offsetX;
         const markerY = systemCenter.y + offsetY;
@@ -3743,8 +4050,41 @@ const DataPointOverlay = ({ mapRef }) => {
         const loadSummary = buildLoadSummary(loadInfo);
         const shipmentTiles = buildShipmentTiles(loadInfoForTiles);
         const loadBarDescriptors = buildLoadBarDescriptors(loadInfo);
-        const timeRemainingText = '—';
-        const etaText = '—';
+
+        // Calculate time information for STL transit ships
+        let timeRemainingText = '—';
+        let etaText = '—';
+
+        const stlFlight = flightsByShipId.get(ship.ShipId) || flightsByShipId.get(ship.Id);
+        if (stlFlight && Array.isArray(stlFlight.Segments) && stlFlight.Segments.length > 0) {
+          // Check if this is an STL-only flight
+          const hasInterSystemSegment = stlFlight.Segments.some(segment => {
+            const originLocation = extractLocationDetails(segment.OriginLines);
+            const destinationLocation = extractLocationDetails(segment.DestinationLines);
+            return originLocation?.systemId && destinationLocation?.systemId &&
+              originLocation.systemId !== destinationLocation.systemId;
+          });
+
+          if (!hasInterSystemSegment) {
+            // This is an STL transit - calculate time remaining
+            const currentSegmentIndex = stlFlight.CurrentSegmentIndex ?? 0;
+            const currentSegment = stlFlight.Segments[currentSegmentIndex];
+
+            if (currentSegment && currentSegment.ArrivalTimeEpochMs) {
+              const arrivalTime = new Date(currentSegment.ArrivalTimeEpochMs);
+              const now = new Date();
+              const remainingMs = arrivalTime - now;
+
+              if (remainingMs > 0) {
+                timeRemainingText = formatDuration(remainingMs);
+                etaText = arrivalTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              } else {
+                timeRemainingText = 'Arrived';
+                etaText = '—';
+              }
+            }
+          }
+        }
 
         const markerGroup = shipLayer.append('g')
           .attr('class', 'ship-group idle-ship-group')
@@ -4175,276 +4515,594 @@ const DataPointOverlay = ({ mapRef }) => {
       });
     }
 
-    // Render system-level shipment count badges
-    if (systemShipmentCounts && systemShipmentCounts.counts && systemShipmentCounts.counts.size > 0) {
-      const effectiveZoom = Math.max(1, zoomLevel);
-      systemShipmentCounts.counts.forEach((count, systemId) => {
-        if (count === 0) return;
+    // Create permanent station markers for all stations (static, affects nothing)
+    if (stationData && Array.isArray(stationData)) {
+      const stationLayer = overlayLayer.append('g').attr('class', 'permanent-station-markers');
 
+      // Group stations by system
+      const stationsBySystem = new Map();
+      stationData.forEach((station) => {
+        if (station?.SystemId) {
+          if (!stationsBySystem.has(station.SystemId)) {
+            stationsBySystem.set(station.SystemId, []);
+          }
+          stationsBySystem.get(station.SystemId).push(station);
+        }
+      });
+
+      stationsBySystem.forEach((systemStations, systemId) => {
         const systemCenter = getSystemCenter(systemId);
         if (!systemCenter) return;
 
-        const badgeRadius = Math.max(7 / effectiveZoom, 4.2);
-        const badgeOffsetX = 0;
-        const badgeOffsetY = 0;
-        const badgeFontSize = Math.max(9.8 / effectiveZoom, 5.6);
+        const effectiveZoom = Math.max(1, zoomLevel);
+        const baseMarkerSize = Math.max(8 / effectiveZoom, 4) * 0.75;
 
-        const badgeGroup = overlayLayer.append('g')
-          .attr('class', 'system-shipment-badge')
-          .style('cursor', 'pointer');
+        systemStations.forEach((station, index) => {
+          let markerX = systemCenter.x;
+          let markerY = systemCenter.y;
 
-        // Badge background circle
-        badgeGroup.append('circle')
-          .attr('cx', systemCenter.x + badgeOffsetX)
-          .attr('cy', systemCenter.y - badgeOffsetY)
-          .attr('r', badgeRadius)
-          .attr('fill', '#3b82f6')
-          .attr('stroke', '#ffffff')
-          .attr('stroke-width', Math.max(1.4 / effectiveZoom, 0.98))
-          .attr('opacity', 0.95);
-
-        // Badge count text
-        badgeGroup.append('text')
-          .attr('x', systemCenter.x + badgeOffsetX)
-          .attr('y', systemCenter.y - badgeOffsetY)
-          .attr('text-anchor', 'middle')
-          .attr('dominant-baseline', 'central')
-          .attr('fill', '#ffffff')
-          .attr('font-size', `${badgeFontSize}px`)
-          .attr('font-weight', 700)
-          .attr('opacity', 1)
-          .text(count > 999 ? '999+' : count);
-
-        // Add hover functionality to show shipment details (SVG-based like ship tooltips)
-        const shipments = systemShipmentCounts.shipmentDetails.get(systemId) || [];
-        const systemName = systemNames[systemId] || systemId;
-
-        // Create tooltip group (hidden by default)
-        const tooltipGroup = overlayLayer.append('g')
-          .attr('class', 'system-shipment-tooltip')
-          .style('pointer-events', 'none')
-          .style('display', 'none');
-
-        // Build individual shipment tiles (not grouped)
-        const contractTiles = [];
-        let shipmentsWithoutContract = 0;
-
-        shipments.forEach(shipment => {
-          if (shipment.contract?.localId) {
-            const contract = shipment.contract;
-            const contractLocalId = contract.localId;
-
-            const weightText = shipment.weight > 0 ? formatCapacityValue(shipment.weight) : '—';
-            const volumeText = shipment.volume > 0 ? formatCapacityValue(shipment.volume) : '—';
-            const destination = contract.destination || '—';
-            const locationName = shipment.locationName || '—';
-
-            let deadlineText = '';
-            if (contract.deadlineEpochMs) {
-              const deadlineDate = new Date(contract.deadlineEpochMs);
-              const now = new Date();
-              const totalHours = Math.round((deadlineDate - now) / (1000 * 60 * 60));
-              const days = Math.floor(totalHours / 24);
-              const hours = totalHours % 24;
-
-              if (days > 0) {
-                deadlineText = ` (${days}d ${hours}h)`;
-              } else {
-                deadlineText = ` (${hours}h)`;
-              }
-            }
-
-            const lines = [
-              `Contract ${contractLocalId}${deadlineText}`,
-              `Wt ${weightText} · Vol ${volumeText}`,
-              `Dest ${destination}`
-            ];
-
-            // Add owner information if available and in group mode
-            if (shipment.owner && groupStorageData && groupStorageData.length > 0) {
-              lines.push(`Owner: ${shipment.owner}`);
-            }
-
-            contractTiles.push({
-              localId: contractLocalId,
-              deadlineText,
-              weightText,
-              volumeText,
-              destination,
-              locationName,
-              lines
-            });
-          } else {
-            shipmentsWithoutContract++;
+          // If multiple stations, arrange them in a small circle around center
+          if (systemStations.length > 1) {
+            const angle = (index / systemStations.length) * 2 * Math.PI;
+            const radius = baseMarkerSize * 1.5;
+            markerX += Math.cos(angle) * radius;
+            markerY += Math.sin(angle) * radius;
           }
+
+          const markerSize = baseMarkerSize * 1.69; // Same size as destination markers
+
+          // Create permanent station marker (static, no interactions)
+          const markerGroup = stationLayer.append('g')
+            .attr('class', 'permanent-station-marker')
+            .style('pointer-events', 'none'); // No interactions
+
+          // Background circle
+          markerGroup.append('circle')
+            .attr('cx', markerX)
+            .attr('cy', markerY)
+            .attr('r', markerSize + 2)
+            .attr('fill', 'rgba(0, 0, 0, 0.7)')
+            .attr('stroke', '#ffffff')
+            .attr('stroke-width', Math.max(1 / effectiveZoom, 0.5));
+
+          // Main marker (station = square)
+          markerGroup.append('rect')
+            .attr('x', markerX - markerSize / 2)
+            .attr('y', markerY - markerSize / 2)
+            .attr('width', markerSize)
+            .attr('height', markerSize)
+            .attr('fill', '#3b82f6')
+            .attr('stroke', '#ffffff')
+            .attr('stroke-width', Math.max(1 / effectiveZoom, 0.5))
+            .attr('rx', 1);
+        });
+      });
+    }
+
+    // Render destination markers
+    if (destinations.size > 0) {
+      const destinationLayer = overlayLayer.append('g').attr('class', 'destination-markers');
+
+      // Group destinations by system for positioning
+      const destinationsBySystem = new Map();
+      destinations.forEach((destInfo, planetKey) => {
+        const systemId = destInfo.systemId;
+        if (!destinationsBySystem.has(systemId)) {
+          destinationsBySystem.set(systemId, []);
+        }
+        destinationsBySystem.get(systemId).push(destInfo);
+      });
+
+      destinationsBySystem.forEach((systemDestinations, systemId) => {
+        const systemCenter = getSystemCenter(systemId);
+        if (!systemCenter) return;
+
+        const effectiveZoom = Math.max(1, zoomLevel);
+        const baseMarkerSize = Math.max(8 / effectiveZoom, 4) * 0.75; // Reduced by 25%
+
+        // Separate stations and planets
+        const stations = systemDestinations.filter(dest => dest.isStation);
+        const planets = systemDestinations.filter(dest => !dest.isStation);
+
+        // Position station markers in the center (permanent)
+        stations.forEach((destInfo, index) => {
+          let markerX = systemCenter.x;
+          let markerY = systemCenter.y;
+
+          // If multiple stations, arrange them in a small circle around center
+          if (stations.length > 1) {
+            const angle = (index / stations.length) * 2 * Math.PI;
+            const radius = baseMarkerSize * 1.5;
+            markerX += Math.cos(angle) * radius;
+            markerY += Math.sin(angle) * radius;
+          }
+
+          const markerSize = baseMarkerSize * 1.69; // Increased by 69% total for stations (30% + 30% more)
+          const arrivals = destInfo.arrivals.sort((a, b) => {
+            if (!a.eta && !b.eta) return 0;
+            if (!a.eta) return 1;
+            if (!b.eta) return -1;
+            return a.eta - b.eta;
+          });
+
+          // Create destination marker
+          const markerGroup = destinationLayer.append('g')
+            .attr('class', 'destination-marker')
+            .attr('data-system-id', systemId)
+            .style('cursor', 'pointer');
+
+          // Background circle
+          markerGroup.append('circle')
+            .attr('cx', markerX)
+            .attr('cy', markerY)
+            .attr('r', markerSize + 2)
+            .attr('fill', 'rgba(0, 0, 0, 0.7)')
+            .attr('stroke', '#ffffff')
+            .attr('stroke-width', Math.max(1 / effectiveZoom, 0.5));
+
+          // Main marker (station = square)
+          markerGroup.append('rect')
+            .attr('x', markerX - markerSize / 2)
+            .attr('y', markerY - markerSize / 2)
+            .attr('width', markerSize)
+            .attr('height', markerSize)
+            .attr('fill', '#3b82f6')
+            .attr('stroke', '#ffffff')
+            .attr('stroke-width', Math.max(1 / effectiveZoom, 0.5))
+            .attr('rx', 1);
+
+          // Badge variables (shared between arrival and shipment badges)
+          const badgeRadius = Math.max(5 / effectiveZoom, 3);
+          const badgeOffsetX = -markerSize * 0.6;
+          const badgeOffsetY = -markerSize * 1;
+
+          // Arrival count badge (render over marker)
+          if (arrivals.length > 0) {
+            markerGroup.append('circle')
+              .attr('cx', markerX + badgeOffsetX)
+              .attr('cy', markerY + badgeOffsetY)
+              .attr('r', badgeRadius)
+              .attr('fill', '#3b82f6')
+              .attr('stroke', '#ffffff')
+              .attr('stroke-width', Math.max(0.5 / effectiveZoom, 0.3));
+
+            markerGroup.append('text')
+              .attr('x', markerX + badgeOffsetX)
+              .attr('y', markerY + badgeOffsetY)
+              .attr('text-anchor', 'middle')
+              .attr('dominant-baseline', 'central')
+              .attr('fill', '#ffffff')
+              .attr('font-size', `${Math.max(6 / effectiveZoom, 4)}px`)
+              .attr('font-weight', 700)
+              .text(arrivals.length > 9 ? '9+' : arrivals.length);
+          }
+
+          // Station shipments badge (under arriving ships badge)
+          const systemShipments = systemShipmentCounts?.shipmentDetails?.get(systemId) || [];
+          if (systemShipments.length > 0) {
+            const shipmentBadgeOffsetY = markerSize; // Position below arriving badge
+            markerGroup.append('circle')
+              .attr('cx', markerX + badgeOffsetX)
+              .attr('cy', markerY + shipmentBadgeOffsetY)
+              .attr('r', badgeRadius)
+              .attr('fill', '#ef4444')
+              .attr('stroke', '#ffffff')
+              .attr('stroke-width', Math.max(0.5 / effectiveZoom, 0.3));
+
+            markerGroup.append('text')
+              .attr('x', markerX + badgeOffsetX)
+              .attr('y', markerY + shipmentBadgeOffsetY)
+              .attr('text-anchor', 'middle')
+              .attr('dominant-baseline', 'central')
+              .attr('fill', '#ffffff')
+              .attr('font-size', `${Math.max(6 / effectiveZoom, 4)}px`)
+              .attr('font-weight', 700)
+              .text(systemShipments.length > 99 ? '99+' : systemShipments.length);
+          }
+
+          // Hover tooltip
+          markerGroup
+            .on('mouseover', function (event) {
+              event.stopPropagation();
+
+              // Highlight all flight paths for ships arriving at this destination
+              arrivals.forEach(arrival => {
+                if (arrival.flightId) {
+                  d3.selectAll(`[data-flight-id="${arrival.flightId}"]`)
+                    .attr('stroke-opacity', 1.0)
+                    .attr('stroke-width', Math.max(2.5 / zoomLevel, 1.5));
+                }
+              });
+
+              // Create tooltip
+              const tooltipGroup = tooltipLayer.append('g')
+                .attr('class', 'destination-tooltip')
+                .style('pointer-events', 'none'); const tooltipX = markerX + 15;
+              let tooltipY = markerY - 10;
+
+              // Header
+              const headerText = tooltipGroup.append('text')
+                .attr('x', tooltipX)
+                .attr('y', tooltipY)
+                .attr('fill', '#f7a600')
+                .attr('font-size', '11px')
+                .attr('font-weight', 700)
+                .attr('text-anchor', 'start')
+                .attr('dominant-baseline', 'hanging')
+                .text(`${destInfo.isStation ? 'Station' : 'Planet'}: ${destInfo.stationName || destInfo.stationNaturalId || destInfo.planetName || destInfo.planetNaturalId || systemNames[systemId] || systemId}`);
+
+              tooltipY += 16;
+
+              // Arrival list
+              arrivals.slice(0, 8).forEach((arrival, index) => {
+                const etaText = arrival.eta ? (() => {
+                  const ms = arrival.eta - new Date();
+                  if (ms <= 0) return '0m';
+                  const totalMinutes = Math.floor(ms / (1000 * 60));
+                  const days = Math.floor(totalMinutes / (24 * 60));
+                  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+                  const minutes = totalMinutes % 60;
+
+                  const parts = [];
+                  if (days > 0) parts.push(`${days}d`);
+                  if (hours > 0) parts.push(`${hours}h`);
+                  if (minutes > 0 || (days === 0 && hours === 0)) parts.push(`${minutes}m`);
+
+                  return parts.join(' ');
+                })() : 'Unknown';
+
+                const arrivalText = tooltipGroup.append('text')
+                  .attr('x', tooltipX)
+                  .attr('y', tooltipY)
+                  .attr('fill', index === 0 ? '#60a5fa' : '#cbd5f5')
+                  .attr('font-size', '10px')
+                  .attr('font-weight', index === 0 ? 600 : 400)
+                  .attr('text-anchor', 'start')
+                  .attr('dominant-baseline', 'hanging')
+                  .text(`${arrival.shipName} (${etaText})`);
+
+                tooltipY += 12;
+              });
+
+              if (arrivals.length > 8) {
+                tooltipGroup.append('text')
+                  .attr('x', tooltipX)
+                  .attr('y', tooltipY)
+                  .attr('fill', '#888')
+                  .attr('font-size', '9px')
+                  .attr('text-anchor', 'start')
+                  .attr('dominant-baseline', 'hanging')
+                  .text(`...and ${arrivals.length - 8} more`);
+                tooltipY += 12;
+              }
+
+              // Add system shipment tiles below arrivals
+              const systemShipments = systemShipmentCounts?.shipmentDetails?.get(systemId) || [];
+              if (systemShipments.length > 0) {
+                tooltipY += 8; // Add some spacing
+
+                // Build shipment tiles similar to system tooltip
+                const baseFontSize = 9;
+                const lineHeight = baseFontSize * 1.2;
+                const tilePaddingX = 6;
+                const tilePaddingY = 4;
+                const tileGap = 4;
+                const tileRadius = 3;
+
+                systemShipments.slice(0, 5).forEach(shipment => { // Limit to 5 tiles
+                  if (shipment.contract?.localId) {
+                    const contract = shipment.contract;
+                    const contractLocalId = contract.localId;
+
+                    const weightText = shipment.weight > 0 ? formatCapacityValue(shipment.weight) : '—';
+                    const volumeText = shipment.volume > 0 ? formatCapacityValue(shipment.volume) : '—';
+                    const destination = contract.destination || '—';
+
+                    let deadlineText = '';
+                    if (contract.deadlineEpochMs) {
+                      const deadlineDate = new Date(contract.deadlineEpochMs);
+                      const now = new Date();
+                      const totalHours = Math.round((deadlineDate - now) / (1000 * 60 * 60));
+                      const days = Math.floor(totalHours / 24);
+                      const hours = totalHours % 24;
+
+                      if (days > 0) {
+                        deadlineText = ` (${days}d ${hours}h)`;
+                      } else {
+                        deadlineText = ` (${hours}h)`;
+                      }
+                    }
+
+                    const lines = [
+                      `${contractLocalId}${deadlineText}`,
+                      `Wt ${weightText} | Vol ${volumeText}`,
+                      `→${destination}`
+                    ];
+
+                    // Create tile background
+                    const tileGroup = tooltipGroup.append('g');
+
+                    // Calculate tile dimensions first
+                    const tempText = tileGroup.append('text')
+                      .attr('font-size', `${baseFontSize}px`)
+                      .attr('text-anchor', 'start')
+                      .attr('dominant-baseline', 'hanging')
+                      .style('visibility', 'hidden'); // Hidden for measurement
+
+                    lines.forEach((line, idx) => {
+                      tempText.append('tspan')
+                        .attr('x', 0)
+                        .attr('dy', idx === 0 ? 0 : lineHeight)
+                        .text(line);
+                    });
+
+                    const textBBox = tempText.node().getBBox();
+                    const tileWidth = textBBox.width + tilePaddingX * 2;
+                    const tileHeight = textBBox.height + tilePaddingY * 2;
+
+                    tempText.remove(); // Remove temp text
+
+                    // Draw tile background
+                    tileGroup.append('rect')
+                      .attr('x', tooltipX)
+                      .attr('y', tooltipY)
+                      .attr('width', tileWidth)
+                      .attr('height', tileHeight)
+                      .attr('fill', 'rgba(30, 41, 59, 0.8)')
+                      .attr('stroke', '#475569')
+                      .attr('stroke-width', 1)
+                      .attr('rx', tileRadius);
+
+                    // Draw tile text
+                    const tileText = tileGroup.append('text')
+                      .attr('x', tooltipX + tilePaddingX)
+                      .attr('y', tooltipY + tilePaddingY)
+                      .attr('font-size', `${baseFontSize}px`)
+                      .attr('text-anchor', 'start')
+                      .attr('dominant-baseline', 'hanging');
+
+                    lines.forEach((line, idx) => {
+                      tileText.append('tspan')
+                        .attr('x', tooltipX + tilePaddingX)
+                        .attr('dy', idx === 0 ? 0 : lineHeight)
+                        .attr('fill', idx === 0 ? '#facc15' : (idx === 1 ? '#bae6fd' : '#cbd5f5'))
+                        .attr('font-weight', idx === 0 ? 700 : (idx === 1 ? 600 : 500))
+                        .text(line);
+                    });
+
+                    tooltipY += tileHeight + tileGap;
+                  }
+                });
+
+                if (systemShipments.length > 5) {
+                  tooltipGroup.append('text')
+                    .attr('x', tooltipX)
+                    .attr('y', tooltipY)
+                    .attr('fill', '#888')
+                    .attr('font-size', '8px')
+                    .attr('text-anchor', 'start')
+                    .attr('dominant-baseline', 'hanging')
+                    .text(`...and ${systemShipments.length - 5} more shipments`);
+                  tooltipY += 10;
+                }
+              }
+
+              // Tooltip background
+              const bbox = tooltipGroup.node().getBBox();
+              tooltipGroup.insert('rect', ':first-child')
+                .attr('x', bbox.x - 6)
+                .attr('y', bbox.y - 4)
+                .attr('width', bbox.width + 12)
+                .attr('height', bbox.height + 8)
+                .attr('fill', 'rgba(0, 0, 0, 0.9)')
+                .attr('stroke', '#333')
+                .attr('stroke-width', 1)
+                .attr('rx', 4);
+
+              // Store tooltip reference for cleanup
+              markerGroup._tooltip = tooltipGroup;
+            })
+            .on('mouseout', function (event) {
+              event.stopPropagation();
+
+              // Reset flight path highlighting
+              arrivals.forEach(arrival => {
+                if (arrival.flightId) {
+                  d3.selectAll(`[data-flight-id="${arrival.flightId}"]`)
+                    .attr('stroke-opacity', 0.7)
+                    .attr('stroke-width', Math.max(1.5 / zoomLevel, 1));
+                }
+              });
+
+              // Remove tooltip
+              if (markerGroup._tooltip) {
+                markerGroup._tooltip.remove();
+                markerGroup._tooltip = null;
+              }
+            });
         });
 
-        const updateTooltipLayout = () => {
-          tooltipGroup.selectAll('*').remove();
+        // Position planet markers in a semi-circle on the top outer ring
+        planets.forEach((destInfo, index) => {
+          let markerX = systemCenter.x;
+          let markerY = systemCenter.y;
 
-          if (shipments.length === 0) return;
+          // Arrange planet markers in a semi-circle (top half) with auto-scaling
+          // Calculate radius to fit all planets without overlap
+          const minRadius = baseMarkerSize * 2;
+          const maxRadius = baseMarkerSize * 5;
+          const planetSpacing = baseMarkerSize * 1.5; // Minimum spacing between planets
+          const requiredArcLength = planets.length * planetSpacing;
+          const requiredRadius = requiredArcLength / Math.PI; // Semi-circle arc length
+          const radius = Math.max(minRadius, Math.min(maxRadius, requiredRadius)) * 1.3; // Increased by 30%
 
-          const baseFontSize = 9.6;
-          const lineHeight = baseFontSize * 1.2;
-          const tilePaddingX = 6.4;
-          const tilePaddingY = 4.8;
-          const tileGap = 4.8;
-          const tileRadius = 3.2;
-          const headerFontSize = 10.4;
+          const angle = ((index - Math.floor(planets.length / 2)) / planets.length) * Math.PI * 0.75; // 0 to π (right to left on top)
+          markerX += Math.cos(angle) * radius;
+          markerY += Math.sin(angle) * radius;
 
-          const tooltipX = systemCenter.x + 12;
-          const tooltipY = systemCenter.y - 8;
+          const markerSize = baseMarkerSize * 0.6; // 40% smaller
+          const arrivals = destInfo.arrivals.sort((a, b) => {
+            if (!a.eta && !b.eta) return 0;
+            if (!a.eta) return 1;
+            if (!b.eta) return -1;
+            return a.eta - b.eta;
+          });
 
-          // Header
-          const headerText = tooltipGroup.append('text')
-            .attr('x', tooltipX)
-            .attr('y', tooltipY)
-            .attr('fill', '#f7a600')
-            .attr('font-size', `${headerFontSize}px`)
-            .attr('font-weight', 700)
-            .attr('text-anchor', 'start')
-            .attr('dominant-baseline', 'hanging')
-            .text(systemName);
+          // Create destination marker
+          const markerGroup = destinationLayer.append('g')
+            .attr('class', 'destination-marker')
+            .attr('data-system-id', systemId)
+            .style('cursor', 'pointer');
 
-          let currentY = tooltipY + headerFontSize + tileGap;
+          // Background circle
+          markerGroup.append('circle')
+            .attr('cx', markerX)
+            .attr('cy', markerY)
+            .attr('r', markerSize + 2)
+            .attr('fill', 'rgba(0, 0, 0, 0.7)')
+            .attr('stroke', '#ffffff')
+            .attr('stroke-width', Math.max(1 / effectiveZoom, 0.5));
 
-          // Summary line showing shipments without tracked contracts
-          let infoText = null;
+          // Main marker (planet = circle)
+          markerGroup.append('circle')
+            .attr('cx', markerX)
+            .attr('cy', markerY)
+            .attr('r', markerSize)
+            .attr('fill', '#10b981')
+            .attr('stroke', '#ffffff')
+            .attr('stroke-width', Math.max(1 / effectiveZoom, 0.5));
 
-          if (shipmentsWithoutContract > 0) {
-            const summaryText = `${shipmentsWithoutContract} shipment${shipmentsWithoutContract > 1 ? 's' : ''} without tracked contract`;
+          // Arrival count badge (render over marker)
+          if (arrivals.length > 0) {
+            const badgeRadius = Math.max(5 / effectiveZoom, 3);
+            markerGroup.append('circle')
+              .attr('cx', markerX + markerSize)
+              .attr('cy', markerY - markerSize)
+              .attr('r', badgeRadius)
+              .attr('fill', '#3b82f6')
+              .attr('stroke', '#ffffff')
+              .attr('stroke-width', Math.max(0.5 / effectiveZoom, 0.3));
 
-            infoText = tooltipGroup.append('text')
-              .attr('x', tooltipX)
-              .attr('y', currentY)
-              .attr('fill', '#fbbf24')
-              .attr('font-size', `${baseFontSize}px`)
-              .attr('font-weight', 600)
-              .attr('text-anchor', 'start')
-              .attr('dominant-baseline', 'hanging')
-              .text(summaryText);
-
-            currentY += baseFontSize + tileGap;
+            markerGroup.append('text')
+              .attr('x', markerX + markerSize)
+              .attr('y', markerY - markerSize)
+              .attr('text-anchor', 'middle')
+              .attr('dominant-baseline', 'central')
+              .attr('fill', '#ffffff')
+              .attr('font-size', `${Math.max(6 / effectiveZoom, 4)}px`)
+              .attr('font-weight', 700)
+              .text(arrivals.length > 9 ? '9+' : arrivals.length);
           }
 
-          // First pass: calculate max width for all tiles and info text
-          let maxWidth = 0;
+          // Hover tooltip
+          markerGroup
+            .on('mouseover', function (event) {
+              event.stopPropagation();
 
-          // Include info text width in calculation
-          if (infoText) {
-            const infoTextBBox = infoText.node().getBBox();
-            maxWidth = Math.max(maxWidth, infoTextBBox.width);
-          }
-          const tileElements = [];
+              // Highlight all flight paths for ships arriving at this destination
+              arrivals.forEach(arrival => {
+                if (arrival.flightId) {
+                  d3.selectAll(`[data-flight-id="${arrival.flightId}"]`)
+                    .attr('stroke-opacity', 1.0)
+                    .attr('stroke-width', Math.max(2.5 / zoomLevel, 1.5));
+                }
+              });
 
-          contractTiles.forEach(tile => {
-            const tileGroup = tooltipGroup.append('g');
+              // Create tooltip
+              const tooltipGroup = tooltipLayer.append('g')
+                .attr('class', 'destination-tooltip')
+                .style('pointer-events', 'none'); const tooltipX = markerX + 15;
+              let tooltipY = markerY - 10;
 
-            const tileText = tileGroup.append('text')
-              .attr('x', tilePaddingX)
-              .attr('y', tilePaddingY)
-              .attr('font-size', `${baseFontSize}px`)
-              .attr('text-anchor', 'start')
-              .attr('dominant-baseline', 'hanging');
+              // Header
+              const headerText = tooltipGroup.append('text')
+                .attr('x', tooltipX)
+                .attr('y', tooltipY)
+                .attr('fill', '#f7a600')
+                .attr('font-size', '11px')
+                .attr('font-weight', 700)
+                .attr('text-anchor', 'start')
+                .attr('dominant-baseline', 'hanging')
+                .text(`${destInfo.isStation ? 'Station' : 'Planet'}: ${destInfo.stationName || destInfo.stationNaturalId || destInfo.planetName || destInfo.planetNaturalId || systemNames[systemId] || systemId}`);
 
-            tile.lines.forEach((line, idx) => {
-              tileText.append('tspan')
-                .attr('x', tilePaddingX)
-                .attr('dy', idx === 0 ? 0 : lineHeight)
-                .attr('fill', idx === 0 ? '#facc15' : (idx === 1 ? '#bae6fd' : '#cbd5f5'))
-                .attr('font-weight', idx === 0 ? 700 : (idx === 1 ? 600 : 500))
-                .text(line);
+              tooltipY += 16;
+
+              // Arrival list
+              arrivals.slice(0, 8).forEach((arrival, index) => {
+                const etaText = arrival.eta ? (() => {
+                  const ms = arrival.eta - new Date();
+                  if (ms <= 0) return '0m';
+                  const totalMinutes = Math.floor(ms / (1000 * 60));
+                  const days = Math.floor(totalMinutes / (24 * 60));
+                  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+                  const minutes = totalMinutes % 60;
+
+                  const parts = [];
+                  if (days > 0) parts.push(`${days}d`);
+                  if (hours > 0) parts.push(`${hours}h`);
+                  if (minutes > 0 || (days === 0 && hours === 0)) parts.push(`${minutes}m`);
+
+                  return parts.join(' ');
+                })() : 'Unknown';
+
+                const arrivalText = tooltipGroup.append('text')
+                  .attr('x', tooltipX)
+                  .attr('y', tooltipY)
+                  .attr('fill', index === 0 ? '#60a5fa' : '#cbd5f5')
+                  .attr('font-size', '10px')
+                  .attr('font-weight', index === 0 ? 600 : 400)
+                  .attr('text-anchor', 'start')
+                  .attr('dominant-baseline', 'hanging')
+                  .text(`${arrival.shipName} (${etaText})`);
+
+                tooltipY += 12;
+              });
+
+              if (arrivals.length > 8) {
+                tooltipGroup.append('text')
+                  .attr('x', tooltipX)
+                  .attr('y', tooltipY)
+                  .attr('fill', '#888')
+                  .attr('font-size', '9px')
+                  .attr('text-anchor', 'start')
+                  .attr('dominant-baseline', 'hanging')
+                  .text(`...and ${arrivals.length - 8} more`);
+              }
+
+              // Tooltip background
+              const bbox = tooltipGroup.node().getBBox();
+              tooltipGroup.insert('rect', ':first-child')
+                .attr('x', bbox.x - 6)
+                .attr('y', bbox.y - 4)
+                .attr('width', bbox.width + 12)
+                .attr('height', bbox.height + 8)
+                .attr('fill', 'rgba(0, 0, 0, 0.9)')
+                .attr('stroke', '#333')
+                .attr('stroke-width', 1)
+                .attr('rx', 4);
+
+              // Store tooltip reference for cleanup
+              markerGroup._tooltip = tooltipGroup;
+            })
+            .on('mouseout', function (event) {
+              event.stopPropagation();
+
+              // Reset flight path highlighting
+              arrivals.forEach(arrival => {
+                if (arrival.flightId) {
+                  d3.selectAll(`[data-flight-id="${arrival.flightId}"]`)
+                    .attr('stroke-opacity', 0.7)
+                    .attr('stroke-width', Math.max(1.5 / zoomLevel, 1));
+                }
+              });
+
+              // Remove tooltip
+              if (markerGroup._tooltip) {
+                markerGroup._tooltip.remove();
+                markerGroup._tooltip = null;
+              }
             });
-
-            const textBBox = tileText.node().getBBox();
-            const tileWidth = textBBox.width + tilePaddingX * 2;
-            const tileHeight = textBBox.height + tilePaddingY * 2;
-
-            maxWidth = Math.max(maxWidth, tileWidth);
-
-            tileElements.push({
-              group: tileGroup,
-              text: tileText,
-              width: tileWidth,
-              height: tileHeight
-            });
-          });
-
-          // Second pass: position tiles with uniform width
-          tileElements.forEach(element => {
-            element.group.attr('transform', `translate(${tooltipX}, ${currentY})`);
-
-            element.group.insert('rect', 'text')
-              .attr('x', 0)
-              .attr('y', 0)
-              .attr('width', maxWidth)
-              .attr('height', element.height)
-              .attr('rx', tileRadius)
-              .attr('ry', tileRadius)
-              .attr('fill', 'rgba(12, 25, 46, 0.92)')
-              .attr('stroke', '#3b82f6')
-              .attr('stroke-width', 0.6)
-              .attr('opacity', 0.95);
-
-            currentY += element.height + tileGap;
-          });
-
-          // Background for entire tooltip
-          const totalHeight = currentY - tooltipY;
-          tooltipGroup.insert('rect', ':first-child')
-            .attr('x', tooltipX - tilePaddingX)
-            .attr('y', tooltipY - tilePaddingY)
-            .attr('width', maxWidth + tilePaddingX * 2)
-            .attr('height', totalHeight + tilePaddingY)
-            .attr('rx', 4.8)
-            .attr('ry', 4.8)
-            .attr('fill', 'rgba(0, 0, 0, 0.9)')
-            .attr('stroke', '#444')
-            .attr('stroke-width', 0.8)
-            .attr('opacity', 0.95);
-        };
-
-        // Enable pointer events on tooltip to keep it visible when hovering
-        tooltipGroup.style('pointer-events', 'all');
-
-        const showTooltip = () => {
-          tooltipGroup.style('display', null);
-          updateTooltipLayout();
-        };
-
-        const hideTooltip = () => {
-          tooltipGroup.style('display', 'none');
-        };
-
-        badgeGroup
-          .on('mouseover', function () {
-            showTooltip();
-          })
-          .on('mouseout', function (event) {
-            const related = event.relatedTarget;
-            const tooltipNode = tooltipGroup.node();
-            if (related && tooltipNode && tooltipNode.contains(related)) {
-              return;
-            }
-            hideTooltip();
-          });
-
-        tooltipGroup
-          .on('mouseover', function () {
-            showTooltip();
-          })
-          .on('mouseout', function (event) {
-            const related = event.relatedTarget;
-            const badgeNode = badgeGroup.node();
-            const tooltipNode = tooltipGroup.node();
-            if (related && (
-              (badgeNode && badgeNode.contains(related)) ||
-              (tooltipNode && tooltipNode.contains(related))
-            )) {
-              return;
-            }
-            hideTooltip();
-          });
+        });
       });
     }
 
@@ -4655,6 +5313,76 @@ const DataPointOverlay = ({ mapRef }) => {
 
         {!isShipFilterCollapsed && (
           <>
+            {!isSilTracking && (
+              <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span style={{ fontSize: '11px', fontWeight: 500, opacity: 0.85 }}>
+                  Username for Flight tracking {!isAuthenticated && '(requires login)'}
+                </span>
+                <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    value={pendingApiUsername}
+                    onChange={handleApiUsernameChange}
+                    placeholder={isAuthenticated ? "Leave empty to use logged-in user" : "Login required"}
+                    disabled={!isAuthenticated}
+                    style={{
+                      background: isAuthenticated ? '#1f2933' : '#2a2a2a',
+                      color: isAuthenticated ? '#f5f5f5' : '#888',
+                      border: '1px solid rgba(255,255,255,0.2)',
+                      borderRadius: '4px',
+                      padding: '5px 6px',
+                      fontSize: '12px',
+                      outline: 'none',
+                      flex: 1,
+                      cursor: isAuthenticated ? 'text' : 'not-allowed'
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleApplyApiUsername}
+                    disabled={!isAuthenticated || !pendingApiUsername.trim() || pendingApiUsername.trim() === apiUsername}
+                    style={{
+                      background: (!isAuthenticated || !pendingApiUsername.trim() || pendingApiUsername.trim() === apiUsername) ? '#374151' : '#3b82f6',
+                      color: '#f5f5f5',
+                      border: 'none',
+                      borderRadius: '4px',
+                      padding: '5px 10px',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      cursor: (!isAuthenticated || !pendingApiUsername.trim() || pendingApiUsername.trim() === apiUsername) ? 'not-allowed' : 'pointer',
+                      opacity: (!isAuthenticated || !pendingApiUsername.trim() || pendingApiUsername.trim() === apiUsername) ? 0.5 : 1
+                    }}
+                  >
+                    Apply
+                  </button>
+                  {(apiUsername || pendingApiUsername) && isAuthenticated && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setApiUsername('');
+                        refetchUserData();
+                      }}
+                      style={{
+                        background: '#dc2626',
+                        color: '#f5f5f5',
+                        border: 'none',
+                        borderRadius: '4px',
+                        padding: '6px 8px',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        opacity: 1,
+                        transition: 'background 0.2s ease'
+                      }}
+                      title="Reset to logged-in username"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </label>
+            )}
+
             <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
               <span style={{ fontSize: '11px', fontWeight: 500, opacity: 0.85 }}>Filter shipments by company code</span>
               <input

@@ -79,7 +79,10 @@ export const AuthProvider = ({ children }) => {
             });
 
             if (!response.ok) {
-                const message = `Login failed with status ${response.status}`;
+                let message = `Login failed with status ${response.status}`;
+                if (response.status === 401) {
+                    message = 'Incorrect username/password';
+                }
                 throw new Error(message);
             }
 
