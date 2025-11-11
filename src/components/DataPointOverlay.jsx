@@ -330,33 +330,33 @@ const DataPointOverlay = ({ mapRef }) => {
     const filteredGroupShips = selectedGroupUsers.includes('__all__')
       ? (groupShips || [])
       : (groupShips || []).filter(ship => selectedGroupUsers.includes(ship._user));
-    // When in group mode (selectedGroupUsers has values), exclude user's own data
-    return selectedGroupUsers.length > 0 ? filteredGroupShips : [...userShips, ...filteredGroupShips];
-  }, [ships, groupShips, selectedGroupUsers]);
+    // When group users exist and are selected, exclude user's own data; otherwise show user data
+    return (groupUsernames.length > 0 && selectedGroupUsers.length > 0) ? filteredGroupShips : [...userShips, ...filteredGroupShips];
+  }, [ships, groupShips, selectedGroupUsers, groupUsernames]);
   const combinedFlights = useMemo(() => {
     const userFlights = flights || [];
     const filteredGroupFlights = selectedGroupUsers.includes('__all__')
       ? (groupFlights || [])
       : (groupFlights || []).filter(flight => selectedGroupUsers.includes(flight._user));
-    // When in group mode (selectedGroupUsers has values), exclude user's own data
-    return selectedGroupUsers.length > 0 ? filteredGroupFlights : [...userFlights, ...filteredGroupFlights];
-  }, [flights, groupFlights, selectedGroupUsers]);
+    // When group users exist and are selected, exclude user's own data; otherwise show user data
+    return (groupUsernames.length > 0 && selectedGroupUsers.length > 0) ? filteredGroupFlights : [...userFlights, ...filteredGroupFlights];
+  }, [flights, groupFlights, selectedGroupUsers, groupUsernames]);
   const combinedStorageData = useMemo(() => {
     const userStorage = storageData || [];
     const filteredGroupStorage = selectedGroupUsers.includes('__all__')
       ? (groupStorageData || [])
       : (groupStorageData || []).filter(storage => selectedGroupUsers.includes(storage._user));
-    // When in group mode (selectedGroupUsers has values), exclude user's own data
-    return selectedGroupUsers.length > 0 ? filteredGroupStorage : [...userStorage, ...filteredGroupStorage];
-  }, [storageData, groupStorageData, selectedGroupUsers]);
+    // When group users exist and are selected, exclude user's own data; otherwise show user data
+    return (groupUsernames.length > 0 && selectedGroupUsers.length > 0) ? filteredGroupStorage : [...userStorage, ...filteredGroupStorage];
+  }, [storageData, groupStorageData, selectedGroupUsers, groupUsernames]);
   const combinedContracts = useMemo(() => {
     const userContracts = contracts || [];
     const filteredGroupContracts = selectedGroupUsers.includes('__all__')
       ? (groupContracts || [])
       : (groupContracts || []).filter(contract => selectedGroupUsers.includes(contract._user));
-    // When in group mode (selectedGroupUsers has values), exclude user's own data
-    return selectedGroupUsers.length > 0 ? filteredGroupContracts : [...userContracts, ...filteredGroupContracts];
-  }, [contracts, groupContracts, selectedGroupUsers]);
+    // When group users exist and are selected, exclude user's own data; otherwise show user data
+    return (groupUsernames.length > 0 && selectedGroupUsers.length > 0) ? filteredGroupContracts : [...userContracts, ...filteredGroupContracts];
+  }, [contracts, groupContracts, selectedGroupUsers, groupUsernames]);
   const labelsEnabled = Boolean(showShipLabels);
   const previousAuthRef = useRef(null);
 
@@ -1240,6 +1240,17 @@ const DataPointOverlay = ({ mapRef }) => {
     }
     setGroupLoading(false);
   }, [groupId, isAuthenticated, authToken, setGroupShips, setGroupFlights, setGroupStorageData, setGroupContracts]);
+
+  const handleGroupClear = useCallback(() => {
+    setGroupId('');
+    setGroupUsernames([]);
+    setSelectedGroupUsers(['__all__']);
+    setGroupError(null);
+    setGroupShips([]);
+    setGroupFlights([]);
+    setGroupStorageData([]);
+    setGroupContracts([]);
+  }, [setGroupShips, setGroupFlights, setGroupStorageData, setGroupContracts]);
 
   const handleGroupUserSelectionChange = useCallback((username, checked) => {
     if (username === '__all__') {
@@ -4838,6 +4849,24 @@ const DataPointOverlay = ({ mapRef }) => {
                       }}
                     >
                       {!isAuthenticated ? 'Login Required' : groupLoading ? 'Loading...' : 'Show Group'}
+                    </button>
+                    <button
+                      onClick={handleGroupClear}
+                      disabled={!isAuthenticated}
+                      style={{
+                        background: !isAuthenticated ? '#6b7280' : '#dc2626',
+                        color: '#f5f5f5',
+                        border: 'none',
+                        borderRadius: '4px',
+                        padding: '6px 8px',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        cursor: !isAuthenticated ? 'not-allowed' : 'pointer',
+                        opacity: !isAuthenticated ? 0.65 : 1,
+                        transition: 'background 0.2s ease'
+                      }}
+                    >
+                      Clear Group
                     </button>
                   </div>
                   {groupError && (
