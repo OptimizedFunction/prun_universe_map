@@ -3107,7 +3107,7 @@ const DataPointOverlay = ({ mapRef }) => {
             return;
           }
 
-          const segmentKey = `${segmentInfo.fromId}__${segmentInfo.toId}`;
+          const segmentKey = [segmentInfo.fromId, segmentInfo.toId].sort().join('__');
           const slot = getOffsetSlotForSegment(segmentKey);
           const offsetIndex = computeOffsetIndex(slot);
           const baseOffset = Math.max(3 / Math.max(1, zoomLevel), 1.5);
