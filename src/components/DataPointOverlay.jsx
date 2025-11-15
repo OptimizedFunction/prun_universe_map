@@ -3925,36 +3925,47 @@ const DataPointOverlay = ({ mapRef }) => {
 
         // Check if ship has flight data to determine direction
         const directionShipFlight = flightsByShipId.get(ship.ShipId) || flightsByShipId.get(ship.Id);
+        let isSTLOnly = false;
         if (directionShipFlight && Array.isArray(directionShipFlight.Segments) && directionShipFlight.Segments.length > 0) {
-          // Ship has flight data - position based on direction
-          const segments = directionShipFlight.Segments;
-          const currentSegmentIndex = directionShipFlight.CurrentSegmentIndex ?? 0;
-          const currentSegment = segments[currentSegmentIndex];
+          // Check if this is an STL-only flight
+          isSTLOnly = !directionShipFlight.Segments.some(segment => {
+            const originLocation = extractLocationDetails(segment.OriginLines);
+            const destinationLocation = extractLocationDetails(segment.DestinationLines);
+            return originLocation?.systemId && destinationLocation?.systemId &&
+              originLocation.systemId !== destinationLocation.systemId;
+          });
 
-          if (currentSegment) {
-            const fromSystem = currentSegment.OriginLines ? extractLocationDetails(currentSegment.OriginLines)?.systemId : null;
-            const toSystem = currentSegment.DestinationLines ? extractLocationDetails(currentSegment.DestinationLines)?.systemId : null;
+          if (!isSTLOnly) {
+            // Ship has inter-system flight data - position based on direction
+            const segments = directionShipFlight.Segments;
+            const currentSegmentIndex = directionShipFlight.CurrentSegmentIndex ?? 0;
+            const currentSegment = segments[currentSegmentIndex];
 
-            let directionSystem = null;
-            if (fromSystem === effectiveSystemId && toSystem) {
-              // Ship is departing from current system to another
-              directionSystem = toSystem;
-            } else if (toSystem === effectiveSystemId && fromSystem) {
-              // Ship is arriving at current system from another
-              directionSystem = fromSystem;
-            }
+            if (currentSegment) {
+              const fromSystem = currentSegment.OriginLines ? extractLocationDetails(currentSegment.OriginLines)?.systemId : null;
+              const toSystem = currentSegment.DestinationLines ? extractLocationDetails(currentSegment.DestinationLines)?.systemId : null;
 
-            if (directionSystem) {
-              const directionCenter = getSystemCenter(directionSystem);
-              if (directionCenter) {
-                // Calculate angle from system center to direction system
-                const dx = directionCenter.x - systemCenter.x;
-                const dy = directionCenter.y - systemCenter.y;
-                shipAngle = Math.atan2(dy, dx);
+              let directionSystem = null;
+              if (fromSystem === effectiveSystemId && toSystem) {
+                // Ship is departing from current system to another
+                directionSystem = toSystem;
+              } else if (toSystem === effectiveSystemId && fromSystem) {
+                // Ship is arriving at current system from another
+                directionSystem = fromSystem;
+              }
 
-                // Position in outer ring for ships with directions
-                const destinationMarkerRadius = Math.max(8 / effectiveZoom, 4) * 0.75 * 5; // Planet ring max radius
-                ringRadius = (destinationMarkerRadius + Math.max(8 / effectiveZoom, 6) * 3) * 0.5;
+              if (directionSystem) {
+                const directionCenter = getSystemCenter(directionSystem);
+                if (directionCenter) {
+                  // Calculate angle from system center to direction system
+                  const dx = directionCenter.x - systemCenter.x;
+                  const dy = directionCenter.y - systemCenter.y;
+                  shipAngle = Math.atan2(dy, dx);
+
+                  // Position in outer ring for ships with directions
+                  const destinationMarkerRadius = Math.max(8 / effectiveZoom, 4) * 0.75 * 5; // Planet ring max radius
+                  ringRadius = (destinationMarkerRadius + Math.max(8 / effectiveZoom, 6) * 3) * 0.5;
+                }
               }
             }
           }
