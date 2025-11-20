@@ -6,7 +6,7 @@ import React, {
   useMemo,
   useState
 } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, collection, where, query } from 'firebase/firestore';
 import { findShortestPath as findShortestPathUtil, highlightPath } from '../utils/graphUtils';
 import { AuthContext } from './AuthContext';
 import { getFirestoreClient } from '../utils/firebaseClient';
@@ -259,12 +259,17 @@ export const GraphProvider = ({ children }) => {
       return () => { };
     }
 
-    const docRef = doc(firestore, 'snapshots', 'contracts');
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      const data = docSnap.exists() ? docSnap.data() : null;
-      const snapshotContracts = Array.isArray(data?.contracts) ? data.contracts : [];
-      setContracts(snapshotContracts);
-      setContractSnapshot(snapshotContracts);
+    const collectionRef = collection(firestore, 'snapshots');
+    const q = query(collectionRef, where('__name__', '>=', 'contracts_'), where('__name__', '<', 'contracts_\uf8ff'));
+    const unsubscribe = onSnapshot(q, (querySnap) => {
+      const allContracts = [];
+      querySnap.forEach((docSnap) => {
+        const data = docSnap.data();
+        const snapshotContracts = Array.isArray(data?.contracts) ? data.contracts : [];
+        allContracts.push(...snapshotContracts);
+      });
+      setContracts(allContracts);
+      setContractSnapshot(allContracts);
     }, (error) => {
       console.error('Error subscribing to SIL contract snapshot:', error);
     });

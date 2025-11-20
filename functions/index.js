@@ -13,19 +13,14 @@ const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const logger = require("firebase-functions/logger");
 
-const MAX_CONTRACT_SNAPSHOT_SIZE = 1500;
+const MAX_CONTRACT_SNAPSHOT_SIZE = 500;
 const CONTRACT_SNAPSHOT_COLLECTION = "snapshots";
-const CONTRACT_SNAPSHOT_DOC_ID = "contracts";
+const CONTRACT_SNAPSHOT_PREFIX = "contracts_";
 const CONTRACT_SOURCE_URL = "https://rest.fnar.net/contract/allcontracts";
 
 admin.initializeApp();
 
 const prunApiKey = defineSecret("PRUN_API_KEY");
-
-const snapshotDocRef = () => admin
-    .firestore()
-    .collection(CONTRACT_SNAPSHOT_COLLECTION)
-    .doc(CONTRACT_SNAPSHOT_DOC_ID);
 
 const normalizeContractIdentifier = (contract) => {
     if (!contract || typeof contract !== "object") {
@@ -153,6 +148,27 @@ const mergeContractsIntoSnapshot = (existingSnapshot, updates) => {
     return snapshot.filter((_, index) => !indicesToDrop.has(index));
 };
 
+const splitIntoChunks = (contracts, maxSize) => {
+    const chunks = [];
+    let currentChunk = [];
+    let currentSize = 0;
+    for (const contract of contracts) {
+        const contractStr = JSON.stringify(contract);
+        const contractSize = Buffer.byteLength(contractStr, 'utf8');
+        if (currentSize + contractSize > maxSize && currentChunk.length > 0) {
+            chunks.push(currentChunk);
+            currentChunk = [];
+            currentSize = 0;
+        }
+        currentChunk.push(contract);
+        currentSize += contractSize;
+    }
+    if (currentChunk.length > 0) {
+        chunks.push(currentChunk);
+    }
+    return chunks;
+};
+
 const fetchContractsFromApi = async (apiKey) => {
     if (!apiKey) {
         throw new Error("Missing PRUN API key. Set the secret with `firebase functions:secrets:set PRUN_API_KEY`.");
@@ -176,20 +192,38 @@ const fetchContractsFromApi = async (apiKey) => {
 };
 
 const loadExistingSnapshot = async () => {
-    const doc = await snapshotDocRef().get();
-    if (!doc.exists) {
-        return [];
-    }
-
-    const data = doc.data();
-    return Array.isArray(data?.contracts) ? data.contracts : [];
+    const collectionRef = admin.firestore().collection(CONTRACT_SNAPSHOT_COLLECTION);
+    const snapshot = await collectionRef.where(admin.firestore.FieldPath.documentId(), '>=', CONTRACT_SNAPSHOT_PREFIX).where(admin.firestore.FieldPath.documentId(), '<', CONTRACT_SNAPSHOT_PREFIX + '\uf8ff').get();
+    const contracts = [];
+    snapshot.forEach(doc => {
+        const data = doc.data();
+        if (Array.isArray(data.contracts)) {
+            contracts.push(...data.contracts);
+        }
+    });
+    return contracts;
 };
 
 const persistSnapshot = async (contracts) => {
-    await snapshotDocRef().set({
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        contracts
+    const collectionRef = admin.firestore().collection(CONTRACT_SNAPSHOT_COLLECTION);
+    // Delete existing chunks
+    const existingDocs = await collectionRef.where(admin.firestore.FieldPath.documentId(), '>=', CONTRACT_SNAPSHOT_PREFIX).where(admin.firestore.FieldPath.documentId(), '<', CONTRACT_SNAPSHOT_PREFIX + '\uf8ff').get();
+    const batch = admin.firestore().batch();
+    existingDocs.forEach(doc => batch.delete(doc.ref));
+    await batch.commit();
+
+    // Now create new chunks
+    const maxSize = 900 * 1024; // 900KB to be safe
+    const chunks = splitIntoChunks(contracts, maxSize);
+    const batch2 = admin.firestore().batch();
+    chunks.forEach((chunk, index) => {
+        const docId = CONTRACT_SNAPSHOT_PREFIX + index.toString().padStart(3, '0');
+        batch2.set(collectionRef.doc(docId), {
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            contracts: chunk
+        });
     });
+    await batch2.commit();
 };
 
 const updateContractsSnapshot = async (apiKey) => {

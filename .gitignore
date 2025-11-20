@@ -30,8 +30,16 @@ public/env-config.js
 .idea/
 .vscode/
 
-# OS generated
-.DS_Store
-Thumbs.db
+# Temporary scripts and data files
+copy_contracts.js
+list_snapshots.js
+fetch_contracts_000.js
+contracts_temp.json
 
-/Dockerfile
+# Firebase cache
+.firebase/cache/
+
+# Additional OS files
+*.swp
+*.swo
+*~
